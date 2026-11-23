@@ -3,7 +3,7 @@ import './App.css';
 import { ProductCard } from './components/ProductCard';
 import { BotonArrepentimiento } from './components/BotonArrepentimiento';
 
-const API_URL = 'http://127.0.0.1:8000';
+const API_URL = 'https://tienda-backend-2-ojq4.onrender.com';
 
 function App() {
   const [vista, setVista] = useState('catalogo');
