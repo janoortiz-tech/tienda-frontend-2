@@ -5,6 +5,23 @@ import { BotonArrepentimiento } from './components/BotonArrepentimiento';
 
 const API_URL = 'https://tienda-backend-2-ojq4.onrender.com';
 
+const decodificarToken = (jwt) => {
+  try {
+    if (!jwt) return null;
+    const base64Url = jwt.split('.')[1];
+    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+    const jsonPayload = decodeURIComponent(
+      atob(base64)
+        .split('')
+        .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+        .join('')
+    );
+    return JSON.parse(jsonPayload);
+  } catch {
+    return null;
+  }
+};
+
 function App() {
   const [vista, setVista] = useState('catalogo');
   const [productos, setProductos] = useState([]);
@@ -19,7 +36,11 @@ function App() {
   });
 
   const [token, setToken] = useState(localStorage.getItem('token_usuario') || null);
-  const [usuarioActual, setUsuarioActual] = useState(null);
+  const [usuarioActual, setUsuarioActual] = useState(() => {
+    const guardado = localStorage.getItem('datos_usuario');
+    return guardado ? JSON.parse(guardado) : null;
+  });
+  const [esAdminConfirmado, setEsAdminConfirmado] = useState(false);
   const [esRegistro, setEsRegistro] = useState(false);
 
   // Formulario Login / Registro
@@ -43,8 +64,17 @@ function App() {
   // Cálculo del Total a Pagar
   const totalCarrito = carrito.reduce((total, item) => total + (Number(item.precio) || 0), 0);
 
+  // Extraer datos del token JWT como respaldo
+  const datosToken = decodificarToken(token);
+
   // Nombre del usuario para mostrar en el botón superior derecho
-  const nombreUsuario = usuarioActual?.nombre || usuarioActual?.email || 'Usuario';
+  const nombreUsuario =
+    usuarioActual?.nombre ||
+    usuarioActual?.email ||
+    datosToken?.nombre ||
+    datosToken?.sub ||
+    datosToken?.email ||
+    'Usuario';
 
   const obtenerTextoRespuesta = (data) => {
     if (!data) return 'Error desconocido en el servidor';
@@ -61,6 +91,9 @@ function App() {
     obtenerProductos();
     if (token) {
       obtenerUsuarioActual(token);
+      verificarPermisosAdmin(token);
+    } else {
+      setEsAdminConfirmado(false);
     }
   }, [token]);
 
@@ -86,12 +119,36 @@ function App() {
       });
       if (res.ok) {
         const data = await res.json();
-        setUsuarioActual(data);
-      } else {
+        const perfil = data?.usuario || data?.user || data?.datos || data;
+        if (perfil && typeof perfil === 'object') {
+          setUsuarioActual((prev) => {
+            const combinado = { ...prev, ...perfil };
+            localStorage.setItem('datos_usuario', JSON.stringify(combinado));
+            return combinado;
+          });
+        }
+      } else if (res.status === 401) {
         cerrarSesion();
       }
     } catch (err) {
       console.error('Error al verificar sesión:', err);
+    }
+  };
+
+  const verificarPermisosAdmin = async (authToken) => {
+    try {
+      const res = await fetch(`${API_URL}/pedidos/todos`, {
+        headers: { 'Authorization': `Bearer ${authToken}` }
+      });
+      if (res.ok) {
+        setEsAdminConfirmado(true);
+        const data = await res.json();
+        setTodosPedidos(data);
+      } else {
+        setEsAdminConfirmado(false);
+      }
+    } catch {
+      setEsAdminConfirmado(false);
     }
   };
 
@@ -149,7 +206,7 @@ function App() {
         const errorMsg = obtenerTextoRespuesta(data);
         alert(`Error de registro:\n${errorMsg}`);
       }
-    } catch (err) {
+    } catch {
       alert('Error de conexión con el servidor backend.');
     }
   };
@@ -179,15 +236,24 @@ function App() {
 
       if (res.ok) {
         const userToken = data.access_token || data.token;
+        const datosLogin = {
+          email,
+          ...(data.usuario || data.user || {}),
+          ...(data.rol ? { rol: data.rol } : {}),
+          ...(data.nombre ? { nombre: data.nombre } : {})
+        };
         setToken(userToken);
+        setUsuarioActual(datosLogin);
         localStorage.setItem('token_usuario', userToken);
+        localStorage.setItem('datos_usuario', JSON.stringify(datosLogin));
         await obtenerUsuarioActual(userToken);
+        await verificarPermisosAdmin(userToken);
         setVista('catalogo');
       } else {
         const errorMsg = obtenerTextoRespuesta(data);
         alert(`Error al iniciar sesión:\n${errorMsg}`);
       }
-    } catch (err) {
+    } catch {
       alert('Error al conectar con el backend.');
     }
   };
@@ -195,7 +261,9 @@ function App() {
   const cerrarSesion = () => {
     setToken(null);
     setUsuarioActual(null);
+    setEsAdminConfirmado(false);
     localStorage.removeItem('token_usuario');
+    localStorage.removeItem('datos_usuario');
     setVista('catalogo');
   };
 
@@ -253,7 +321,24 @@ function App() {
     }
   };
 
-  const esAdmin = usuarioActual && (usuarioActual.es_admin || usuarioActual.is_admin || usuarioActual.rol === 'admin' || usuarioActual.role === 'admin');
+  const rolDetectado = (
+    usuarioActual?.rol ||
+    usuarioActual?.role ||
+    datosToken?.rol ||
+    datosToken?.role ||
+    ''
+  ).toString().toLowerCase();
+
+  const esAdmin = Boolean(
+    token && (
+      esAdminConfirmado ||
+      rolDetectado === 'admin' ||
+      usuarioActual?.es_admin ||
+      usuarioActual?.is_admin ||
+      datosToken?.es_admin ||
+      datosToken?.is_admin
+    )
+  );
 
   const limpiarFormularioProducto = () => {
     setEditandoProductoId(null);
@@ -342,7 +427,6 @@ function App() {
         body: JSON.stringify({ estado: nuevoEstado })
       });
 
-      // Fallback si FastAPI espera el estado como query parameter (?estado=...)
       if (res.status === 422) {
         res = await fetch(`${API_URL}/pedidos/${pedidoId}/estado?estado=${encodeURIComponent(nuevoEstado)}`, {
           method: 'PUT',
