@@ -9,6 +9,7 @@ function App() {
   const [vista, setVista] = useState('catalogo');
   const [productos, setProductos] = useState([]);
   const [pedidos, setPedidos] = useState([]);
+  const [todosPedidos, setTodosPedidos] = useState([]);
   const [loading, setLoading] = useState(false);
 
   // Persistencia del Carrito en localStorage
@@ -27,7 +28,8 @@ function App() {
   const [password, setPassword] = useState('');
   const [aceptoTratamiento, setAceptoTratamiento] = useState(true);
 
-  // Formulario Admin
+  // Formulario Admin (Crear / Editar Producto)
+  const [editandoProductoId, setEditandoProductoId] = useState(null);
   const [nuevoNombre, setNuevoNombre] = useState('');
   const [nuevaDesc, setNuevaDesc] = useState('');
   const [nuevoPrecio, setNuevoPrecio] = useState('');
@@ -105,6 +107,21 @@ function App() {
       }
     } catch (err) {
       console.error('Error al obtener pedidos:', err);
+    }
+  };
+
+  const obtenerTodosLosPedidosAdmin = async () => {
+    if (!token) return;
+    try {
+      const res = await fetch(`${API_URL}/pedidos/todos`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setTodosPedidos(data);
+      }
+    } catch (err) {
+      console.error('Error al obtener todos los pedidos:', err);
     }
   };
 
@@ -238,35 +255,60 @@ function App() {
 
   const esAdmin = usuarioActual && (usuarioActual.es_admin || usuarioActual.is_admin || usuarioActual.rol === 'admin' || usuarioActual.role === 'admin');
 
-  const crearProductoAdmin = async (e) => {
+  const limpiarFormularioProducto = () => {
+    setEditandoProductoId(null);
+    setNuevoNombre('');
+    setNuevaDesc('');
+    setNuevoPrecio('');
+    setNuevaImagen('');
+  };
+
+  const cargarProductoParaEditar = (prod) => {
+    setEditandoProductoId(prod.id);
+    setNuevoNombre(prod.nombre || '');
+    setNuevaDesc(prod.descripcion || '');
+    setNuevoPrecio(prod.precio || '');
+    setNuevaImagen(prod.imagen_url || prod.imagen || '');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const guardarProductoAdmin = async (e) => {
     e.preventDefault();
+    const urlImagenFinal = nuevaImagen || 'https://store.storeimages.cdn-apple.com/4668/as-images.apple.com/is/iphone-15-pro-finish-select-202309-6-7inch-naturaltitanium?wid=512&hei=512&fmt=p-jpg';
+    const payload = {
+      nombre: nuevoNombre,
+      descripcion: nuevaDesc,
+      precio: parseFloat(nuevoPrecio),
+      imagen_url: urlImagenFinal,
+      imagen: urlImagenFinal
+    };
+
     try {
-      const res = await fetch(`${API_URL}/productos`, {
-        method: 'POST',
+      const url = editandoProductoId
+        ? `${API_URL}/productos/${editandoProductoId}`
+        : `${API_URL}/productos`;
+      const method = editandoProductoId ? 'PUT' : 'POST';
+
+      const res = await fetch(url, {
+        method,
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({
-          nombre: nuevoNombre,
-          descripcion: nuevaDesc,
-          precio: parseFloat(nuevoPrecio),
-          imagen: nuevaImagen || 'https://store.storeimages.cdn-apple.com/4668/as-images.apple.com/is/iphone-15-pro-finish-select-202309-6-7inch-naturaltitanium?wid=512&hei=512&fmt=p-jpg'
-        })
+        body: JSON.stringify(payload)
       });
 
       if (res.ok) {
-        alert('¡Producto creado en la Base de Datos!');
-        setNuevoNombre('');
-        setNuevaDesc('');
-        setNuevoPrecio('');
-        setNuevaImagen('');
+        alert(editandoProductoId ? '¡Producto actualizado con éxito!' : '¡Producto creado en la Base de Datos!');
+        limpiarFormularioProducto();
         obtenerProductos();
       } else {
-        alert('Error al crear el producto.');
+        const data = await res.json().catch(() => null);
+        alert(`Error al guardar producto:\n${obtenerTextoRespuesta(data)}`);
       }
     } catch (err) {
       console.error(err);
+      alert('Error de conexión con el backend.');
     }
   };
 
@@ -280,6 +322,9 @@ function App() {
       if (res.ok) {
         alert('Producto eliminado.');
         obtenerProductos();
+      } else {
+        const data = await res.json().catch(() => null);
+        alert(`No se pudo eliminar el producto:\n${obtenerTextoRespuesta(data)}`);
       }
     } catch (err) {
       console.error(err);
@@ -288,7 +333,7 @@ function App() {
 
   const cambiarEstadoPedidoAdmin = async (pedidoId, nuevoEstado) => {
     try {
-      const res = await fetch(`${API_URL}/pedidos/${pedidoId}`, {
+      let res = await fetch(`${API_URL}/pedidos/${pedidoId}/estado`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -296,9 +341,44 @@ function App() {
         },
         body: JSON.stringify({ estado: nuevoEstado })
       });
+
+      // Fallback si FastAPI espera el estado como query parameter (?estado=...)
+      if (res.status === 422) {
+        res = await fetch(`${API_URL}/pedidos/${pedidoId}/estado?estado=${encodeURIComponent(nuevoEstado)}`, {
+          method: 'PUT',
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+      }
+
       if (res.ok) {
         alert(`Pedido #${pedidoId} actualizado a "${nuevoEstado}"`);
+        obtenerTodosLosPedidosAdmin();
         obtenerPedidos();
+      } else {
+        const data = await res.json().catch(() => null);
+        alert(`Error al actualizar estado:\n${obtenerTextoRespuesta(data)}`);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const eliminarPedidoAdmin = async (pedidoId) => {
+    if (!window.confirm(`¿Seguro que deseas eliminar el Pedido #${pedidoId} de la base de datos?`)) return;
+    try {
+      const res = await fetch(`${API_URL}/pedidos/${pedidoId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        alert(`Pedido #${pedidoId} eliminado.`);
+        obtenerTodosLosPedidosAdmin();
+        obtenerPedidos();
+      } else {
+        const data = await res.json().catch(() => null);
+        alert(`Error al eliminar pedido:\n${obtenerTextoRespuesta(data)}`);
       }
     } catch (err) {
       console.error(err);
@@ -330,7 +410,7 @@ function App() {
           )}
 
           {esAdmin && (
-            <button className="btn-nav-apple btn-arrepentimiento-glow" onClick={() => { setVista('admin'); obtenerPedidos(); }}>
+            <button className="btn-nav-apple btn-arrepentimiento-glow" onClick={() => { setVista('admin'); obtenerTodosLosPedidosAdmin(); obtenerProductos(); }}>
               ⚙️ Panel Admin
             </button>
           )}
@@ -389,7 +469,7 @@ function App() {
 
                 <div style={{
                   display: 'flex',
-                  justify: 'space-between',
+                  justifyContent: 'space-between',
                   alignItems: 'center',
                   padding: '16px 20px',
                   backgroundColor: '#ffffff',
@@ -423,7 +503,7 @@ function App() {
           </div>
         )}
 
-        {/* HISTORIAL DE PEDIDOS (NUMERACIÓN 1, 2, 3...) */}
+        {/* HISTORIAL DE PEDIDOS */}
         {vista === 'pedidos' && (
           <div style={{ padding: '40px 20px', textAlign: 'center' }}>
             <h2 style={{ fontSize: '32px', marginBottom: '20px', fontWeight: '700' }}>Historial de Pedidos</h2>
@@ -432,10 +512,10 @@ function App() {
             ) : (
               <div style={{ maxWidth: '600px', margin: '0 auto' }}>
                 {pedidos.map((ped, idx) => (
-                  <div key={idx} style={{ padding: '16px 20px', background: '#fff', borderRadius: '14px', marginBottom: '12px', textAlign: 'left', boxShadow: '0 2px 10px rgba(0,0,0,0.04)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div key={ped.id || idx} style={{ padding: '16px 20px', background: '#fff', borderRadius: '14px', marginBottom: '12px', textAlign: 'left', boxShadow: '0 2px 10px rgba(0,0,0,0.04)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div>
                       <p style={{ fontWeight: '700', fontSize: '16px', margin: '0 0 4px 0', color: '#1d1d1f' }}>
-                        Pedido #{idx + 1}
+                        Pedido #{ped.id || idx + 1}
                       </p>
                       <p style={{ fontSize: '13px', color: '#86868b', margin: 0 }}>
                         Estado: <span style={{ color: '#0071e3', fontWeight: '600' }}>{ped.estado || 'pendiente'}</span>
@@ -515,51 +595,88 @@ function App() {
           </div>
         )}
 
-        {/* PANEL ADMIN */}
+        {/* PANEL ADMIN COMPLETO */}
         {vista === 'admin' && esAdmin && (
           <div style={{ padding: '20px 0' }}>
             <h2 style={{ fontSize: '32px', fontWeight: '700', marginBottom: '8px' }}>Panel de Control de Administrador</h2>
             <p style={{ color: '#86868b', marginBottom: '30px' }}>Gestión total de productos y pedidos guardados en la base de datos.</p>
 
+            {/* FORMULARIO CREAR / EDITAR PRODUCTO */}
             <div style={{ background: '#fff', padding: '24px', borderRadius: '18px', marginBottom: '40px', boxShadow: '0 4px 20px rgba(0,0,0,0.04)' }}>
-              <h3 style={{ fontSize: '20px', marginBottom: '16px' }}>Crear Nuevo Producto</h3>
-              <form onSubmit={crearProductoAdmin} style={{ display: 'grid', gap: '12px' }}>
+              <h3 style={{ fontSize: '20px', marginBottom: '16px' }}>
+                {editandoProductoId ? `Editando Producto #${editandoProductoId}` : 'Crear Nuevo Producto'}
+              </h3>
+              <form onSubmit={guardarProductoAdmin} style={{ display: 'grid', gap: '12px' }}>
                 <input type="text" placeholder="Nombre del iPhone (ej. iPhone 15 Pro)" value={nuevoNombre} onChange={(e) => setNuevoNombre(e.target.value)} required style={{ padding: '12px', borderRadius: '10px', border: '1px solid #d2d2d7' }} />
                 <input type="text" placeholder="Descripción" value={nuevaDesc} onChange={(e) => setNuevaDesc(e.target.value)} required style={{ padding: '12px', borderRadius: '10px', border: '1px solid #d2d2d7' }} />
-                <input type="number" placeholder="Precio ($)" value={nuevoPrecio} onChange={(e) => setNuevoPrecio(e.target.value)} required style={{ padding: '12px', borderRadius: '10px', border: '1px solid #d2d2d7' }} />
-                <input type="url" placeholder="URL de la imagen (opcional)" value={nuevaImagen} onChange={(e) => setNuevaImagen(e.target.value)} style={{ padding: '12px', borderRadius: '10px', border: '1px solid #d2d2d7' }} />
-                <button type="submit" className="btn-nav-apple btn-catalogo" style={{ padding: '12px', justifyContent: 'center' }}>
-                  Guardar Producto en DB
-                </button>
+                <input type="number" step="0.01" placeholder="Precio ($)" value={nuevoPrecio} onChange={(e) => setNuevoPrecio(e.target.value)} required style={{ padding: '12px', borderRadius: '10px', border: '1px solid #d2d2d7' }} />
+                <input type="url" placeholder="URL de la imagen (https://...)" value={nuevaImagen} onChange={(e) => setNuevaImagen(e.target.value)} style={{ padding: '12px', borderRadius: '10px', border: '1px solid #d2d2d7' }} />
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  <button type="submit" className="btn-nav-apple btn-catalogo" style={{ flex: 1, padding: '12px', justifyContent: 'center' }}>
+                    {editandoProductoId ? 'Actualizar Producto' : 'Guardar Producto en DB'}
+                  </button>
+                  {editandoProductoId && (
+                    <button type="button" onClick={limpiarFormularioProducto} className="btn-nav-apple btn-salir" style={{ padding: '12px 20px' }}>
+                      Cancelar Edición
+                    </button>
+                  )}
+                </div>
               </form>
             </div>
 
-            <h3 style={{ fontSize: '20px', marginBottom: '16px' }}>Gestión del Catálogo</h3>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: '16px', marginBottom: '40px' }}>
+            {/* GESTIÓN DEL CATÁLOGO (EDITAR Y ELIMINAR) */}
+            <h3 style={{ fontSize: '20px', marginBottom: '16px' }}>Gestión del Catálogo ({productos.length})</h3>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '16px', marginBottom: '40px' }}>
               {productos.map((prod) => (
                 <div key={prod.id} style={{ background: '#fff', padding: '16px', borderRadius: '14px', border: '1px solid #eee' }}>
-                  <p style={{ fontWeight: '600' }}>{prod.nombre}</p>
-                  <p style={{ color: '#0071e3', fontWeight: '700' }}>${prod.precio}</p>
-                  <button onClick={() => eliminarProductoAdmin(prod.id)} className="btn-nav-apple btn-salir" style={{ width: '100%', marginTop: '10px', justifyContent: 'center' }}>
-                    Eliminar
-                  </button>
+                  <p style={{ fontWeight: '600', marginBottom: '4px' }}>{prod.nombre}</p>
+                  <p style={{ fontSize: '13px', color: '#86868b', marginBottom: '8px' }}>{prod.descripcion}</p>
+                  <p style={{ color: '#0071e3', fontWeight: '700', marginBottom: '12px' }}>${prod.precio}</p>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button onClick={() => cargarProductoParaEditar(prod)} className="btn-nav-apple btn-catalogo" style={{ flex: 1, justifyContent: 'center' }}>
+                      Editar
+                    </button>
+                    <button onClick={() => eliminarProductoAdmin(prod.id)} className="btn-nav-apple btn-salir" style={{ flex: 1, justifyContent: 'center' }}>
+                      Eliminar
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
 
-            <h3 style={{ fontSize: '20px', marginBottom: '16px' }}>Gestión de Pedidos de Clientes</h3>
-            {pedidos.length === 0 ? (
+            {/* GESTIÓN GLOBAL DE PEDIDOS */}
+            <h3 style={{ fontSize: '20px', marginBottom: '16px' }}>Gestión Global de Pedidos ({todosPedidos.length})</h3>
+            {todosPedidos.length === 0 ? (
               <p style={{ color: '#86868b' }}>No hay pedidos cargados en el sistema.</p>
             ) : (
-              pedidos.map((ped, idx) => (
-                <div key={ped.id || idx} style={{ background: '#fff', padding: '16px', borderRadius: '12px', marginBottom: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              todosPedidos.map((ped, idx) => (
+                <div key={ped.id || idx} style={{ background: '#fff', padding: '16px 20px', borderRadius: '12px', marginBottom: '12px', display: 'flex', flexWrap: 'wrap', gap: '12px', justifyContent: 'space-between', alignItems: 'center', boxShadow: '0 2px 8px rgba(0,0,0,0.03)' }}>
                   <div>
-                    <p style={{ fontWeight: '600' }}>Pedido #{idx + 1} (ID DB: #{ped.id})</p>
-                    <p style={{ fontSize: '13px', color: '#86868b' }}>Estado actual: {ped.estado || 'Pendiente'}</p>
+                    <p style={{ fontWeight: '700', margin: '0 0 4px 0' }}>
+                      Pedido #{ped.id} {ped.usuario_id ? `(Usuario ID: ${ped.usuario_id})` : ''}
+                    </p>
+                    <p style={{ fontSize: '13px', color: '#86868b', margin: 0 }}>
+                      Estado actual: <strong style={{ color: '#0071e3' }}>{ped.estado || 'pendiente'}</strong>
+                      {ped.total ? ` — Total: $${Number(ped.total).toLocaleString('es-AR')}` : ''}
+                    </p>
                   </div>
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <button onClick={() => cambiarEstadoPedidoAdmin(ped.id, 'Aprobado')} className="btn-nav-apple btn-carrito">Aprobar</button>
-                    <button onClick={() => cambiarEstadoPedidoAdmin(ped.id, 'Cancelado')} className="btn-nav-apple btn-salir">Cancelar</button>
+
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
+                    <select
+                      value={ped.estado || 'pendiente'}
+                      onChange={(e) => cambiarEstadoPedidoAdmin(ped.id, e.target.value)}
+                      style={{ padding: '8px 12px', borderRadius: '10px', border: '1px solid #d2d2d7', fontWeight: '600', cursor: 'pointer' }}
+                    >
+                      <option value="pendiente">Pendiente</option>
+                      <option value="aprobado">Aprobado</option>
+                      <option value="enviado">Enviado</option>
+                      <option value="reembolsado">Reembolsado</option>
+                      <option value="cancelado">Cancelado</option>
+                    </select>
+
+                    <button onClick={() => eliminarPedidoAdmin(ped.id)} className="btn-nav-apple btn-salir">
+                      Eliminar Pedido
+                    </button>
                   </div>
                 </div>
               ))
@@ -567,7 +684,7 @@ function App() {
           </div>
         )}
 
-        {/* DEFENSORIA DEL CONSUMIDOR / BOTÓN DE ARREPENTIMIENTO (CON LEY N° 24.240) */}
+        {/* DEFENSORIA DEL CONSUMIDOR / BOTÓN DE ARREPENTIMIENTO */}
         {vista === 'arrepentimiento' && (
           <div style={{ maxWidth: '650px', margin: '30px auto', background: '#fff', padding: '36px', borderRadius: '24px', boxShadow: '0 8px 30px rgba(0,0,0,0.06)' }}>
             <h2 style={{ fontSize: '26px', fontWeight: '700', marginBottom: '10px', color: '#1d1d1f' }}>
